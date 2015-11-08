@@ -9,7 +9,9 @@ namespace FluidTYPO3\Fluidcontent\Backend;
  */
 
 use FluidTYPO3\Fluidcontent\Service\ConfigurationService;
+use FluidTYPO3\Flux\Service\FluxService;
 use FluidTYPO3\Flux\Utility\MiscellaneousUtility;
+use TYPO3\CMS\Backend\Utility\BackendUtility;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use FluidTYPO3\Flux\Form;
 
@@ -44,8 +46,17 @@ class ContentSelector {
 	 * @return string
 	 */
 	public function renderField(array &$parameters, &$parentObject) {
+		list($whiteList, $blackList) = $this->resolveWhiteAndBlackList($parameters);
+
 		$configurationService = $this->getConfigurationService();
 		$setup = $configurationService->getContentElementFormInstances();
+
+		if (count($whiteList)) {
+			$this->applyWhitelist($setup, $whiteList);
+		} else if (count($blackList)) {
+			$this->applyBlacklist($setup, $blackList);
+		}
+
 		$name = $parameters['itemFormElName'];
 		$value = $parameters['itemFormElValue'];
 		$selectedIcon = $this->getSelectedIcon($setup, $value);
@@ -123,10 +134,93 @@ class ContentSelector {
 	 * @return ConfigurationService
 	 */
 	protected function getConfigurationService() {
-		/** @var ConfigurationService $contentService */
-		$contentService = GeneralUtility::makeInstance('TYPO3\CMS\Extbase\Object\ObjectManager')
+		/** @var ConfigurationService $configurationService */
+		$configurationService = GeneralUtility::makeInstance('TYPO3\CMS\Extbase\Object\ObjectManager')
 			->get('FluidTYPO3\Fluidcontent\Service\ConfigurationService');
-		return $contentService;
+		return $configurationService;
 	}
 
+	/**
+	 * @return FluxService
+	 */
+	protected function getFluxService() {
+		/** @var FluxService $fluxService */
+		$fluxService = GeneralUtility::makeInstance('TYPO3\CMS\Extbase\Object\ObjectManager')
+			->get('FluidTYPO3\Flux\Service\FluxService');
+		return $fluxService;
+	}
+
+	/**
+	 * @param array $parameters
+	 * @return array
+	 */
+	protected function resolveWhiteAndBlackList($parameters) {
+		$whiteList = array();
+		$blackList = array();
+
+		if (!isset($parameters['row']) || !isset($parameters['row']['tx_flux_parent'])) {
+			return array($whiteList, $blackList);
+		}
+
+		$fluxService = $this->getFluxService();
+
+		$containerUid = $parameters['row']['tx_flux_parent'];
+		$containerElement = BackendUtility::getRecord('tt_content', $containerUid);
+		$containerConfigurationProvider = $fluxService->resolvePrimaryConfigurationProvider('tt_content', 'pi_flexform', $containerElement);
+
+		if (!$containerConfigurationProvider) {
+			return array($whiteList, $blackList);
+		}
+
+		$context = $containerConfigurationProvider->getViewContext($containerElement);
+
+		if ($grid = $fluxService->getGridFromTemplateFile($context)) {
+			$gridRows = $grid->getRows();
+
+			foreach ($gridRows as $gridRow) {
+				$gridColumns = $gridRow->getColumns();
+				foreach ($gridColumns as $gridColumn) {
+					/** @var \FluidTYPO3\Flux\Form\Container\Column $gridColumn */
+					$allowedElements = preg_replace(array('/\./', '/:/'), '_', $gridColumn->getVariable('Fluidcontent.allowedContentTypes'));
+					$deniedElements = preg_replace(array('/\./', '/:/'), '_', $gridColumn->getVariable('Fluidcontent.deniedContentTypes'));
+					if ('' !== $allowedElements) {
+						$whiteList = array_merge($whiteList, explode(',', $allowedElements));
+					}
+					if ('' !== $deniedElements) {
+						$blackList = array_merge($blackList, explode(',', $deniedElements));
+					}
+				}
+			}
+		}
+
+		return array($whiteList, $blackList);
+	}
+
+	/**
+	 * @param array $contentElementList
+	 * @param array $whiteList
+	 */
+	protected function applyWhitelist(&$contentElementList, $whiteList) {
+		foreach ($contentElementList as $extensionKey => $contentElements) {
+			foreach ($contentElements as $elementKey => $elementDefinition) {
+				if (!in_array($elementKey, $whiteList)) {
+					unset($contentElementList[$extensionKey][$elementKey]);
+				}
+			}
+		}
+	}
+
+	/**
+	 * @param array $contentElementList
+	 * @param array $blackList
+	 */
+	protected function applyBlacklist(&$contentElementList, $blackList) {
+		foreach ($contentElementList as $extensionKey => $contentElements) {
+			foreach ($contentElements as $elementKey => $elementDefinition) {
+				if (in_array($elementKey, $blackList)) {
+					unset($contentElementList[$extensionKey][$elementKey]);
+				}
+			}
+		}
+	}
 }
